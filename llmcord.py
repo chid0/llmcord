@@ -11,6 +11,7 @@ from discord.ext import commands
 import httpx
 from openai import AsyncOpenAI
 import yaml
+import sys
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,7 +30,8 @@ EDIT_DELAY_SECONDS = 1
 MAX_MESSAGE_NODES = 500
 
 
-def get_config(filename: str = "config.yaml") -> dict[str, Any]:
+def get_config() -> dict[str, Any]:
+    filename = sys.argv[1]
     with open(filename, encoding="utf-8") as file:
         return yaml.safe_load(file)
 
@@ -108,7 +110,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
     is_dm = new_msg.channel.type == discord.ChannelType.private
 
-    if (not is_dm and discord_bot.user not in new_msg.mentions) or new_msg.author.bot:
+    if (not is_dm and discord_bot.user not in new_msg.mentions):
         return
 
     role_ids = set(role.id for role in getattr(new_msg.author, "roles", ()))
@@ -262,6 +264,8 @@ async def on_message(new_msg: discord.Message) -> None:
     use_plain_responses = config.get("use_plain_responses", False)
     max_message_length = 2000 if use_plain_responses else (4096 - len(STREAMING_INDICATOR))
 
+    logging.info(messages[::-1])
+
     kwargs = dict(model=model, messages=messages[::-1], stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
     try:
         async with new_msg.channel.typing():
@@ -286,6 +290,9 @@ async def on_message(new_msg: discord.Message) -> None:
                     response_contents.append("")
 
                 response_contents[-1] += new_content
+
+                import re
+                response_contents[-1] = re.sub(r"\s*<think>.*?</think>\s*", "", response_contents[-1], flags=re.DOTALL)
 
                 if not use_plain_responses:
                     ready_to_edit = (edit_task == None or edit_task.done()) and datetime.now().timestamp() - last_task_time >= EDIT_DELAY_SECONDS
@@ -317,6 +324,7 @@ async def on_message(new_msg: discord.Message) -> None:
                     reply_to_msg = new_msg if response_msgs == [] else response_msgs[-1]
                     response_msg = await reply_to_msg.reply(content=content, suppress_embeds=True)
                     response_msgs.append(response_msg)
+                    print("N", new_msg)
 
                     msg_nodes[response_msg.id] = MsgNode(parent_msg=new_msg)
                     await msg_nodes[response_msg.id].lock.acquire()
@@ -325,7 +333,11 @@ async def on_message(new_msg: discord.Message) -> None:
         logging.exception("Error while generating response")
 
     for response_msg in response_msgs:
-        msg_nodes[response_msg.id].text = "".join(response_contents)
+        text = "".join(response_contents)
+        import re
+        text = re.sub(r"\s*<think>.*?</think>\s*", "", text, flags=re.DOTALL)
+        print("F", text)
+        msg_nodes[response_msg.id].text = text
         msg_nodes[response_msg.id].lock.release()
 
     # Delete oldest MsgNodes (lowest message IDs) from the cache

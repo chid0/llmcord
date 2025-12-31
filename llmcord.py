@@ -313,6 +313,7 @@ async def on_message(new_msg: discord.Message) -> None:
                 if start_next_msg := response_contents == [] or len(response_contents[-1] + new_content) > max_message_length:
                     response_contents.append("")
 
+                logging.info(new_content)
                 response_contents[-1] += new_content
 
                 import re

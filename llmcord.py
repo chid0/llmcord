@@ -97,6 +97,7 @@ async def build_messages_chain(new_msg, config, provider_slash_model):
                 curr_node.has_bad_attachments = len(curr_msg.attachments) > len(good_attachments)
 
                 try:
+                    logging.info(f"walking from curr msg ({curr_node.text}) upwards")
                     if (
                         curr_msg.reference == None
                         and discord_bot.user.mention not in curr_msg.content
@@ -104,16 +105,22 @@ async def build_messages_chain(new_msg, config, provider_slash_model):
                         and prev_msg_in_channel.type in (discord.MessageType.default, discord.MessageType.reply)
                         and prev_msg_in_channel.author == (discord_bot.user if curr_msg.channel.type == discord.ChannelType.private else curr_msg.author)
                     ):
+                        logging.info(f"parent is prev msg {prev_msg_in_channel}")
                         curr_node.parent_msg = prev_msg_in_channel
                     else:
                         is_public_thread = curr_msg.channel.type == discord.ChannelType.public_thread
                         parent_is_thread_start = is_public_thread and curr_msg.reference == None and curr_msg.channel.parent.type == discord.ChannelType.text
+                        logging.info(f"parent is thread start {parent_is_thread_start} reference {curr_msg.reference}")
 
                         if parent_msg_id := curr_msg.channel.id if parent_is_thread_start else getattr(curr_msg.reference, "message_id", None):
                             if parent_is_thread_start:
+                                logging.info(f"parent is channel starter {curr_msg.channel.starter_message}")
                                 curr_node.parent_msg = curr_msg.channel.starter_message or await curr_msg.channel.parent.fetch_message(parent_msg_id)
                             else:
+                                logging.info(f"parent is reference {curr_msg.reference.cached_message}")
                                 curr_node.parent_msg = curr_msg.reference.cached_message or await curr_msg.channel.fetch_message(parent_msg_id)
+                        else:
+                            pass
 
                 except (discord.NotFound, discord.HTTPException):
                     logging.exception("Error fetching next message in the chain")
@@ -257,7 +264,7 @@ async def on_message(new_msg: discord.Message) -> None:
     # Build the messages array
     messages, user_warnings, limited_detected = await build_messages_chain(new_msg, config, provider_slash_model)
 
-    logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)} ... {new_msg}):\n{new_msg.content}")
+    logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)} up to {messages[-1]} ... {new_msg}):\n{new_msg.content}")
 
     if limited_detected:
         logging.warning(f"Too many rounds with limited users detected, ignoring.")
@@ -288,7 +295,7 @@ async def on_message(new_msg: discord.Message) -> None:
     use_plain_responses = config.get("use_plain_responses", False)
     max_message_length = 2000 if use_plain_responses else (4096 - len(STREAMING_INDICATOR))
 
-    logging.info(messages[::-1])
+    logging.info(f"sending messages to LLM: {messages[::-1]}")
 
     kwargs = dict(model=model, messages=messages[::-1], stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
     try:

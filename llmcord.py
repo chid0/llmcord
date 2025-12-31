@@ -311,7 +311,7 @@ async def on_message(new_msg: discord.Message) -> None:
         system_prompt = system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
         if accept_usernames:
             system_prompt += "\nUser's names are their Discord IDs and should be typed as '<@ID>'."
-        system_prompt += "\nEmit tools in XML format if you want to open a wiki page first - always do that when asked about LoL, never trust your own knowledge. <tool name=\"LoL-wiki-lookup\" param=\"PageName\"/>"
+        system_prompt += "\nEmit tools in XML format if you want to open a wiki page first - always do that when asked about LoL, never trust your own knowledge. (For voice lines, check /Audio subpage.) <tool name=\"LoL-wiki-lookup\" param=\"PageName\"/>"
         messages.append(dict(role="system", content=system_prompt))
 
     # Generate and send response message(s) (can be multiple if response is long)

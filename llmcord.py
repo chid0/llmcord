@@ -5,6 +5,7 @@ from datetime import datetime
 import logging
 from typing import Any, Literal, Optional
 
+import aiohttp
 import discord
 from discord.app_commands import Choice
 from discord.ext import commands
@@ -201,6 +202,36 @@ async def model_autocomplete(interaction: discord.Interaction, curr_str: str) ->
     return choices
 
 
+async def jina_load(url: str) -> str:
+
+    """Fetch from jina.ai with backoff on HTTP 451."""
+    async with aiohttp.ClientSession() as session:
+        jina_url = "https://r.jina.ai/" + url
+
+        backoff_delays = [0, 30, 90]  # No delay, then 30s, then 90s
+
+        for attempt, delay in enumerate(backoff_delays):
+            if delay > 0:
+                logger.info(f"Waiting {delay}s before retry {attempt + 1}/3 for jina.ai")
+                await asyncio.sleep(delay)
+
+            try:
+                headers = {"User-Agent": "irssi-llmagent/1.0"}
+                if 'jina_api_key' in config:
+                    headers["Authorization"] = f"Bearer {config['jina_api_key']}"
+                async with session.get(
+                    jina_url,
+                    timeout=aiohttp.ClientTimeout(30),
+                    headers=headers,
+                ) as response:
+                    response.raise_for_status()
+                    content = await response.text()
+                    return content.strip()
+
+            except aiohttp.ClientResponseError as e:
+                return repr(e)
+
+
 @discord_bot.event
 async def on_ready() -> None:
     if client_id := config["client_id"]:
@@ -280,7 +311,7 @@ async def on_message(new_msg: discord.Message) -> None:
         system_prompt = system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
         if accept_usernames:
             system_prompt += "\nUser's names are their Discord IDs and should be typed as '<@ID>'."
-
+        system_prompt += "\nEmit tools in XML format if you want to open a wiki page first - always do that when asked about LoL, never trust your own knowledge. <tool name=\"LoL-wiki-lookup\" param=\"PageName\"/>"
         messages.append(dict(role="system", content=system_prompt))
 
     # Generate and send response message(s) (can be multiple if response is long)
@@ -356,6 +387,9 @@ async def on_message(new_msg: discord.Message) -> None:
             if use_plain_responses:
                 for content in response_contents:
                     reply_to_msg = new_msg if response_msgs == [] else response_msgs[-1]
+                    if isinstance(reply_to_msg.nonce, discord.Message):
+                        reply_to_msg = reply_to_msg.nonce
+                    logging.info(f"Sending reply - content: {content}")
                     response_msg = await reply_to_msg.reply(content=content, suppress_embeds=True)
                     response_msgs.append(response_msg)
 
@@ -378,6 +412,35 @@ async def on_message(new_msg: discord.Message) -> None:
         for msg_id in sorted(msg_nodes.keys())[: num_nodes - MAX_MESSAGE_NODES]:
             async with msg_nodes.setdefault(msg_id, MsgNode()).lock:
                 msg_nodes.pop(msg_id, None)
+
+    logging.info(f"content: {response_msgs[-1].content}, contents: {response_contents}, node: {msg_nodes[response_msgs[-1].id]}")
+    if response_msgs and "<tool" in response_msgs[-1].content:
+        tool_result = ""
+        for tool_name, tool_param in re.findall(r'<tool name="([^"]*)" param="([^"]*)"[^>*]>', response_msgs[-1].content):
+            if tool_name == "LoL-wiki-lookup":
+                wiki_md = await jina_load("https://wiki.leagueoflegends.com/en-us/" + tool_param)
+                wiki_md = re.sub(r'https://wiki.leagueoflegends.com/en-us/', '', wiki_md)
+                wiki_md = re.sub(r'\[!\[Image .*?\]\(.*?\)\]\(.*?\)', '', wiki_md)
+                wiki_md = re.sub(r'!\[Image .*?\]\(.*?\)', '', wiki_md)
+                wiki_md = re.sub(r'\[([^][]*?)\]\(.*?\)', r'\1', wiki_md)
+                wiki_md = re.sub(r'(HP|MP|HP5|MP5|AR|AD|MR)\n*(\d+)\+(\d+)', r'\1: \2 (+\3 x lvl^2)', wiki_md)
+                wiki_md = re.sub(r"\nURL Source.*?\nPast versions\n", "", wiki_md)
+                wiki_md = re.sub(r"\[edit . edit source\]\n-*", "\n----", wiki_md)
+                wiki_md = re.sub(r"\*\*Edit\*\*", "", wiki_md)
+                wiki_md = re.sub(r"\n\n*", "\n", wiki_md)
+                tool_result += f"<wikipage name=\"{tool_param}\">" + wiki_md[:24000] + "</wikipage>"
+            else:
+                tool_result += f"\nUnknown tool: {tool_name}"
+        logging.info(f"tool result {tool_result}")
+        
+        import copy
+        tool_result_message = copy.copy(new_msg)
+        tool_result_message.reference = discord.MessageReference(message_id=response_msgs[-1].id, channel_id=response_msgs[-1].channel.id)
+        tool_result_message.content = tool_result
+        tool_result_message.id = new_msg.id + 1
+        tool_result_message.nonce = response_msgs[-1]
+        logging.info(f"final message {tool_result_message}")
+        await on_message(tool_result_message)
 
 
 async def main() -> None:
